@@ -17,8 +17,6 @@
 local core = require("apisix.core")
 local utils = require("apisix.admin.utils")
 local apisix_ssl = require("apisix.ssl")
-local apisix_consumer = require("apisix.consumer")
-local tbl_deepcopy = require("apisix.core.table").deepcopy
 local setmetatable = setmetatable
 local tostring = tostring
 local ipairs = ipairs
@@ -26,8 +24,10 @@ local type = type
 
 
 local _M = {
-    list_filter_fields = {},
+    need_v3_filter = true,
 }
+
+
 local mt = {
     __index = _M
 }
@@ -117,17 +117,14 @@ function _M:check_conf(id, conf, need_id, typ, allow_time)
         end
     end
 
+    core.log.info("conf  : ", core.json.delay_encode(conf))
+
     -- check the resource own rules
     if self.name ~= "secrets" then
         core.log.info("schema: ", core.json.delay_encode(self.schema))
     end
 
-    local conf_for_check = tbl_deepcopy(conf)
-    local ok, err = self.checker(id, conf_for_check, need_id, self.schema, {secret_type = typ})
-
-    if self.encrypt_conf then
-        self.encrypt_conf(id, conf)
-    end
+    local ok, err = self.checker(id, conf, need_id, self.schema, typ)
 
     if not ok then
         return ok, err
@@ -160,12 +157,6 @@ function _M:get(id, conf, sub_path)
         key = key .. "/" .. id
     end
 
-    -- some resources(consumers) have sub resources(credentials),
-    -- the key format of sub resources will differ from the main resource
-    if self.get_resource_etcd_key then
-        key = self.get_resource_etcd_key(id, conf, sub_path)
-    end
-
     local res, err = core.etcd.get(key, not id)
     if not res then
         core.log.error("failed to get ", self.kind, "[", key, "] from etcd: ", err)
@@ -179,10 +170,46 @@ function _M:get(id, conf, sub_path)
         end
     end
 
-    -- consumers etcd range response will include credentials, so need to filter out them
-    if self.name == "consumers" and res.body.list then
-        res.body.list = apisix_consumer.filter_consumers_list(res.body.list)
-        res.body.total = #res.body.list
+    if self.name == "routes" and not id then
+        ngx.log(ngx.ERR, "[DEBUG] Enter filter routes")
+
+        local headers = ngx.req.get_headers()
+        local user_id = headers["X-User-Id"]
+
+        ngx.log(ngx.ERR, "[DEBUG] Header X-User-Id: ", user_id or "nil")
+
+        if user_id and res.body and res.body.list then
+            ngx.log(ngx.ERR, "[DEBUG] Original list size: ", #res.body.list)
+
+            local filtered = {}
+
+            for i, item in ipairs(res.body.list) do
+                if item.value and item.value.user_id then
+                    ngx.log(ngx.ERR, "[DEBUG] Checking item ", i,
+                            " with user_id: ", item.value.user_id)
+
+                    if item.value.user_id == user_id then
+                        ngx.log(ngx.ERR, "[DEBUG] -> Matched item ", i)
+                        table.insert(filtered, item)
+                    end
+                else
+                    ngx.log(ngx.WARN, "[DEBUG] Item ", i, " missing value or user_id")
+                end
+            end
+
+            res.body.list = filtered
+            res.body.total = #filtered
+
+            ngx.log(ngx.ERR, "[DEBUG] Filtered list size: ", #filtered)
+            for i, item in ipairs(filtered) do
+                ngx.log(ngx.ERR, "[DEBUG] Filtered item ", i,
+                    " | id: ", item.id or "nil",
+                    " | user_id: ", item.value and item.value.user_id or "nil"
+                )
+            end
+        else
+            ngx.log(ngx.WARN, "[DEBUG] Skip filtering - missing user_id or list")
+        end
     end
 
     utils.fix_count(res.body, id)
@@ -224,6 +251,9 @@ function _M:post(id, conf, sub_path, args)
         core.log.error("failed to post ", self.kind, "[", key, "] to etcd: ", err)
         return 503, {error_msg = err}
     end
+    
+    core.log.warn("=== ETCD PUSH SUCCESS ===")
+    core.log.warn("resource: ", self.name, ", key: ", key)
 
     return res.status, res.body
 end
@@ -264,33 +294,44 @@ function _M:put(id, conf, sub_path, args)
 
     key = key .. "/" .. id
 
-    if self.get_resource_etcd_key then
-        key = self.get_resource_etcd_key(id, conf, sub_path, args)
-    end
-
-    if self.name == "credentials" then
-        local consumer_key = apisix_consumer.get_consumer_key_from_credential_key(key)
-        local res, err = core.etcd.get(consumer_key, false)
-        if not res then
-            return 503, {error_msg = err}
-        end
-        if res.status == 404 then
-            return res.status, {error_msg = "consumer not found"}
-        end
-        if res.status ~= 200 then
-            core.log.debug("failed to get consumer for the credential, credential key: ", key,
-                ", consumer key: ", consumer_key, ", res.status: ", res.status)
-            return res.status, {error_msg = "failed to get the consumer"}
-        end
-    end
-
     if self.name ~= "plugin_metadata" then
         local ok, err = utils.inject_conf_with_prev_conf(self.kind, key, conf)
         if not ok then
             return 503, {error_msg = err}
         end
-    else
-        conf.id = id
+    end
+
+    -- For admin to ignore password everytime clients send "PUT" request
+    if self.name == "admins" then
+        local body_str = core.request.get_body()
+        local body = core.json.decode(body_str)
+        if body and body.password ~= nil then
+            if not ngx.encode_base64(ngx.decode_base64(body.password) or "") == body.password then
+                conf.password = ngx.encode_base64(body.password)
+            else
+                conf.password = body.password
+            end
+        end
+    end
+
+    -- For route to ignore the change request if user_id is not similar to the one in etcd
+    if self.name == "routes" then
+        local headers = ngx.req.get_headers()
+        local user_id = headers["X-User-Id"]
+        
+        if not user_id then
+            return 403, {error_msg = "forbidden: missing user id"}
+        end
+
+        local existing, err = core.etcd.get("/routes/" .. id)
+        if not existing or not existing.body or not existing.body.node or not existing.body.node.value then
+            return 403, {error_msg = "forbidden: route not found or inaccessible"}
+        end
+
+        local owner = existing.body.node.value.user_id
+        if owner ~= user_id then
+            return 403, {error_msg = "forbidden: you can only modify your own routes"}
+        end
     end
 
     local ttl = nil
@@ -303,6 +344,10 @@ function _M:put(id, conf, sub_path, args)
         core.log.error("failed to put ", self.kind, "[", key, "] to etcd: ", err)
         return 503, {error_msg = err}
     end
+    
+    core.log.warn("=== ETCD SET SUCCESS ===")
+    core.log.warn("resource: ", self.name, ", key: ", key)
+    core.log.warn("conf: ", core.json.encode(conf))
 
     return res.status, res.body
 end
@@ -331,21 +376,10 @@ function _M:delete(id, conf, sub_path, uri_args)
 
     key = key .. "/" .. id
 
-    if self.get_resource_etcd_key then
-        key = self.get_resource_etcd_key(id, conf, sub_path, uri_args)
-    end
-
     if self.delete_checker and uri_args.force ~= "true" then
         local code, err = self.delete_checker(id)
         if err then
             return code, err
-        end
-    end
-
-    if self.name == "consumers" then
-        local res, err = core.etcd.rmdir(key .. "/credentials/")
-        if not res then
-            return 503, {error_msg = err}
         end
     end
 

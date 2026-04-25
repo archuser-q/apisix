@@ -62,6 +62,7 @@ local resources = {
     plugin_configs  = require("apisix.admin.plugin_config"),
     consumer_groups = require("apisix.admin.consumer_group"),
     secrets         = require("apisix.admin.secrets"),
+    admins          = require("apisix.admin.admin")
 }
 
 

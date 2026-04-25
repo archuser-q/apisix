@@ -70,6 +70,7 @@ end
 local function find_consumer(ctx, conf)
     local from_header = true
     local key = core.request.header(ctx, conf.header)
+    core.log.warn("incoming key: ", key)
 
     if not key then
         local uri_args = core.request.get_uri_args(ctx) or {}
@@ -82,6 +83,7 @@ local function find_consumer(ctx, conf)
     end
 
     local consumer, consumer_conf, err = consumer_mod.find_consumer(plugin_name, "key", key)
+    core.log.warn("consumer after lookup: ", core.json.encode(consumer))
     if not consumer then
         core.log.warn("failed to find consumer: ", err or "invalid api key")
         return nil, nil, "Invalid API key in request"

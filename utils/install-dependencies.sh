@@ -71,9 +71,9 @@ function install_dependencies_with_apt() {
         arch_path="arm64/"
     fi
     if [[ "${1}" == "ubuntu" ]]; then
-        sudo add-apt-repository -y "deb http://openresty.org/package/${arch_path}ubuntu $(lsb_release -sc) main"
+        sudo add-apt-repository -y "deb http://openresty.org/package/${arch_path}ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main"
     elif [[ "${1}" == "debian" ]]; then
-        sudo add-apt-repository -y "deb http://openresty.org/package/${arch_path}debian $(lsb_release -sc) openresty"
+        sudo add-apt-repository -y "deb http://openresty.org/package/${arch_path}debian $(. /etc/os-release && echo $UBUNTU_CODENAME) openresty"
     fi
     sudo apt-get update
 
@@ -91,7 +91,7 @@ function multi_distro_installation() {
         install_dependencies_with_yum "fedora"
     elif grep -Eqi "Debian" /etc/issue || grep -Eq "Debian" /etc/*-release; then
         install_dependencies_with_apt "debian"
-    elif grep -Eqi "Ubuntu" /etc/issue || grep -Eq "Ubuntu" /etc/*-release; then
+    elif grep -Eqi -e "Ubuntu" -e "LinuxMint" /etc/issue || grep -Eq -e "Ubuntu" -e "LinuxMint" /etc/*-release; then
         install_dependencies_with_apt "ubuntu"
     elif grep -Eqi "Arch" /etc/issue || grep -Eqi "EndeavourOS" /etc/issue || grep -Eq "Arch" /etc/*-release; then
         install_dependencies_with_aur
@@ -111,7 +111,7 @@ function multi_distro_uninstallation() {
         sudo yum autoremove -y openresty-zlib-devel openresty-pcre-devel
     elif grep -Eqi "Debian" /etc/issue || grep -Eq "Debian" /etc/*-release; then
         sudo apt-get autoremove -y openresty-zlib-dev openresty-pcre-dev
-    elif grep -Eqi "Ubuntu" /etc/issue || grep -Eq "Ubuntu" /etc/*-release; then
+    elif grep -Eqi -e "Ubuntu" -e "LinuxMint" /etc/issue || grep -Eq -e "Ubuntu" -e "LinuxMint" /etc/*-release; then
         sudo apt-get autoremove -y openresty-zlib-dev openresty-pcre-dev
     else
         echo "Non-supported distribution, APISIX is only supported on Linux-based systems"
