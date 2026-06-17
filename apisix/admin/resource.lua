@@ -17,6 +17,8 @@
 local core = require("apisix.core")
 local utils = require("apisix.admin.utils")
 local apisix_ssl = require("apisix.ssl")
+local jwt = require("resty.jwt")
+local JWT_SECRET = os.getenv("JWT_SECRET")
 local setmetatable = setmetatable
 local tostring = tostring
 local ipairs = ipairs
@@ -171,44 +173,22 @@ function _M:get(id, conf, sub_path)
     end
 
     if self.name == "routes" and not id then
-        ngx.log(ngx.ERR, "[DEBUG] Enter filter routes")
-
-        local headers = ngx.req.get_headers()
-        local user_id = headers["X-User-Id"]
-
-        ngx.log(ngx.ERR, "[DEBUG] Header X-User-Id: ", user_id or "nil")
-
-        if user_id and res.body and res.body.list then
-            ngx.log(ngx.ERR, "[DEBUG] Original list size: ", #res.body.list)
-
-            local filtered = {}
-
-            for i, item in ipairs(res.body.list) do
-                if item.value and item.value.user_id then
-                    ngx.log(ngx.ERR, "[DEBUG] Checking item ", i,
-                            " with user_id: ", item.value.user_id)
-
-                    if item.value.user_id == user_id then
-                        ngx.log(ngx.ERR, "[DEBUG] -> Matched item ", i)
+        local cookies = ngx.req.get_headers()["Cookie"] or ""
+        local token = cookies:match("token=([^;]+)")
+        
+        if token then
+            local decoded = jwt:verify(JWT_SECRET, token)
+            if decoded.verified then
+                local username = decoded.payload.username
+                local filtered = {}
+                for _, item in ipairs(res.body.list) do
+                    if item.value and item.value.created_by == username then
                         table.insert(filtered, item)
                     end
-                else
-                    ngx.log(ngx.WARN, "[DEBUG] Item ", i, " missing value or user_id")
                 end
+                res.body.list = filtered
+                res.body.total = #filtered
             end
-
-            res.body.list = filtered
-            res.body.total = #filtered
-
-            ngx.log(ngx.ERR, "[DEBUG] Filtered list size: ", #filtered)
-            for i, item in ipairs(filtered) do
-                ngx.log(ngx.ERR, "[DEBUG] Filtered item ", i,
-                    " | id: ", item.id or "nil",
-                    " | user_id: ", item.value and item.value.user_id or "nil"
-                )
-            end
-        else
-            ngx.log(ngx.WARN, "[DEBUG] Skip filtering - missing user_id or list")
         end
     end
 
@@ -298,39 +278,6 @@ function _M:put(id, conf, sub_path, args)
         local ok, err = utils.inject_conf_with_prev_conf(self.kind, key, conf)
         if not ok then
             return 503, {error_msg = err}
-        end
-    end
-
-    -- For admin to ignore password everytime clients send "PUT" request
-    if self.name == "admins" then
-        local body_str = core.request.get_body()
-        local body = core.json.decode(body_str)
-        if body and body.password ~= nil then
-            if not ngx.encode_base64(ngx.decode_base64(body.password) or "") == body.password then
-                conf.password = ngx.encode_base64(body.password)
-            else
-                conf.password = body.password
-            end
-        end
-    end
-
-    -- For route to ignore the change request if user_id is not similar to the one in etcd
-    if self.name == "routes" then
-        local headers = ngx.req.get_headers()
-        local user_id = headers["X-User-Id"]
-        
-        if not user_id then
-            return 403, {error_msg = "forbidden: missing user id"}
-        end
-
-        local existing, err = core.etcd.get("/routes/" .. id)
-        if not existing or not existing.body or not existing.body.node or not existing.body.node.value then
-            return 403, {error_msg = "forbidden: route not found or inaccessible"}
-        end
-
-        local owner = existing.body.node.value.user_id
-        if owner ~= user_id then
-            return 403, {error_msg = "forbidden: you can only modify your own routes"}
         end
     end
 
@@ -461,6 +408,21 @@ function _M:patch(id, conf, sub_path, args)
         end
         utils.inject_timestamp(node_value, nil, true)
     else
+        if self.name == "admins" then
+            local body_str = core.request.get_body()
+            local body, _ = core.json.decode(body_str)
+            if body and body.old_password then
+                local encoded_old = ngx.encode_base64(body.old_password)
+                if node_value.password ~= encoded_old then
+                    return 401, {error_msg = "wrong password"}
+                end
+            end
+            -- strip old_password before merge in check_conf
+            conf.old_password = nil
+            if conf.password then
+                conf.password = ngx.encode_base64(conf.password)
+            end
+        end
         if self.name == "ssls" then
             if conf.key then
                 conf.key = apisix_ssl.aes_encrypt_pkey(conf.key)

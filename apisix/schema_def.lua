@@ -567,7 +567,6 @@ _M.route = {
     properties = {
         -- metadata
         id = id_schema,
-        user_id = rule_name_def,
         created_by = rule_name_def,
         name = rule_name_def,
         desc = desc_def,
@@ -694,39 +693,6 @@ _M.route = {
     additionalProperties = false,
 }
 
-_M.admin = {
-    type = "object",
-    properties = {
-        id = id_schema,
-        username = {
-            type = "string", minLength = 1, maxLength = rule_name_def.maxLength,
-            pattern = [[^[a-zA-Z0-9_]+$]]
-        },
-        fullname = {
-            type = "string", minLength = 1, maxLength = rule_name_def.maxLength
-        },
-        dob = {
-            type = "string", minLength = 10, maxLength = 10,
-            pattern = [[^\d{4}-\d{2}-\d{2}$]]
-        },
-        password = {
-            type = "string", minLength = 1, maxLength = rule_name_def.maxLength,
-        },
-        status = {
-            type = "boolean", default = true,
-        },
-        create_time = timestamp_def,
-        update_time = timestamp_def,
-        role = {
-            type="string",
-            enum={"admin", "super_admin"},
-            default = "admin",
-        },
-        desc = desc_def,
-    },
-    additionalProperties = false,
-}
-
 
 _M.service = {
     type = "object",
@@ -778,6 +744,40 @@ _M.consumer = {
         plugins = plugins_schema,
     },
     required = {"username"},
+    additionalProperties = false,
+}
+
+_M.admin = {
+    type = "object",
+    properties = {
+        id = id_schema,
+        username = {
+            type = "string", minLength = 1, maxLength = rule_name_def.maxLength,
+            pattern = [[^[a-zA-Z0-9_]+$]]
+        },
+        fullname = {
+            type = "string", minLength = 1, maxLength = rule_name_def.maxLength
+        },
+        dob = {
+            type = "string", minLength = 10, maxLength = 10,
+            pattern = [[^\d{4}-\d{2}-\d{2}$]]
+        },
+        password = {
+            type = "string", minLength = 1, maxLength = rule_name_def.maxLength,
+        },
+        status = {
+            type = "boolean", default = true,
+        },
+        create_time = timestamp_def,
+        update_time = timestamp_def,
+        role = {
+            type="string",
+            enum={"admin", "super_admin"},
+            default = "admin",
+        },
+        desc = desc_def,
+    },
+    required = {'username'},
     additionalProperties = false,
 }
 

@@ -2,6 +2,8 @@ local core = require("apisix.core")
 local resource = require("apisix.admin.resource")
 local schema = require("apisix.schema_def")
 local plugin  = require("apisix.plugin")
+local jwt = require("resty.jwt")
+local JWT_SECRET = os.getenv("JWT_SECRET")
 local admin_schema = schema.admin
 
 -- Encode library base64
@@ -36,6 +38,7 @@ end
 
 
 local function check_conf(id, conf, need_id)
+    conf.id = nil
     if type(conf.status) == "table" and conf.status.status ~= nil then
         conf.status = conf.status.status
     end
@@ -99,12 +102,72 @@ local function check_conf(id, conf, need_id)
     core.log.warn("=== ADMIN CHECK_CONF PASSED ===")
     core.log.warn("conf: ", core.json.encode(conf))
     
-    return true
+    return conf.username
 end
 
-return resource.new({
+local function login()
+    local body_str = core.request.get_body()
+    local body, err = core.json.decode(body_str)
+    if not body then
+        core.response.exit(400, {error_msg = "invalid request body"})
+        return
+    end
+
+    if not body.username or not body.password then
+        core.response.exit(400, {error_msg = "username and password required"})
+        return
+    end
+
+    local key = "/admins/" .. body.username
+    local res, err = core.etcd.get(key)
+
+    if not res or res.status ~= 200 then
+        core.response.exit(404, {error_msg = "admin not found"})
+        return
+    end
+
+    local admin = res.body.node.value
+
+    if not admin.status then
+        core.response.exit(403, {error_msg = "account disabled"})
+        return
+    end
+
+    local encoded = ngx_encode_base64(body.password)
+    if admin.password ~= encoded then
+        core.response.exit(401, {error_msg = "invalid password"})
+        return
+    end
+
+    local token = jwt:sign(
+        JWT_SECRET,
+        {
+            header = { typ = "JWT", alg = "HS256" },
+            payload = {
+                username = admin.username,
+                role = admin.role,
+                exp = ngx.time() + 86400
+            }
+        }
+    )
+
+    ngx.header["Set-Cookie"] = "token=" .. token
+        .. "; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"
+
+    core.response.exit(200, {
+        username = admin.username,
+        role = admin.role,
+    })
+end
+
+local _M = resource.new({
     name = "admins",
     kind = "admin",
     schema = admin_schema,
-    checker = check_conf
+    checker = check_conf,
+    unsupported_methods = {"post"}
 })
+
+_M.login = login  -- export ra ngoài
+
+return _M

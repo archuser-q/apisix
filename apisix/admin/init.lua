@@ -430,6 +430,11 @@ local function validate_configs()
     return config_validate.validate()
 end
 
+local function admin_login()
+    set_ctx_and_check_token()
+    return resources.admins.login()
+end
+
 
 local http_head_route = {
     paths = [[/apisix/admin]],
@@ -440,6 +445,11 @@ local http_head_route = {
 
 local uri_route = {
     http_head_route,
+    {
+        paths = [[/apisix/admin/admins/login]],
+        methods = {"POST"},
+        handler = admin_login,
+    },
     {
         paths = [[/apisix/admin/configs/validate]],
         methods = {"POST"},

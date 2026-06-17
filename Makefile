@@ -187,10 +187,11 @@ init: runtime
 
 
 ### run : Start the apisix server
+### source $(CURDIR)/.env && sudo JWT_SECRET=$$JWT_SECRET $(ENV_APISIX) start
 .PHONY: run
 run: runtime
 	@$(call func_echo_status, "$@ -> [ Start ]")
-	$(ENV_APISIX) start
+	source $(CURDIR)/.env && sudo JWT_SECRET=$$JWT_SECRET $(ENV_APISIX) start
 	@$(call func_echo_success_status, "$@ -> [ Done ]")
 
 
