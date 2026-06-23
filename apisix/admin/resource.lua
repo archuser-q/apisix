@@ -18,11 +18,88 @@ local core = require("apisix.core")
 local utils = require("apisix.admin.utils")
 local apisix_ssl = require("apisix.ssl")
 local jwt = require("resty.jwt")
-local JWT_SECRET = os.getenv("JWT_SECRET")
 local setmetatable = setmetatable
 local tostring = tostring
 local ipairs = ipairs
 local type = type
+local http = require("resty.http")
+
+
+-- =============== Used for logging ===============
+local JWT_SECRET = os.getenv("JWT_SECRET")
+local CH_HOST = os.getenv("CH_HOST")
+local CH_PORT = tonumber(os.getenv("CH_PORT"))
+local CH_USER = os.getenv("CH_USER")
+local CH_PASSWORD = os.getenv("CH_PASSWORD")
+local CH_DATABASE = os.getenv("CH_DATABASE")
+local CH_ACCESS_TABLE = os.getenv("CH_ACCESS_TABLE")
+local SALT = os.getenv("SALT")
+
+local function get_current_username()
+    local cookies = ngx.var.http_cookie or ""
+    local token = cookies:match("token=([^;]+)")
+    if not token then
+        return ""
+    end
+    local decoded = jwt:verify(JWT_SECRET, token)
+    if decoded and decoded.verified and decoded.payload then
+        return decoded.payload.username or ""
+    end
+    return ""
+end
+
+local function send_access_log(entry)
+    local httpc = http.new()
+    httpc:set_timeout(3000)
+    local ok, err = httpc:connect(CH_HOST, CH_PORT)
+    if not ok then
+        core.log.error("access audit: connect failed: ", err)
+        return
+    end
+
+    local body = core.json.encode(entry)
+    local res, err2 = httpc:request({
+        method = "POST",
+        path = "/",
+        body = "INSERT INTO " .. CH_ACCESS_TABLE .. " FORMAT JSONEachRow " .. body,
+        headers = {
+            ["Content-Type"] = "application/json",
+            ["X-ClickHouse-User"] = CH_USER,
+            ["X-ClickHouse-Key"] = CH_PASSWORD,
+            ["X-ClickHouse-Database"] = CH_DATABASE,
+        }
+    })
+
+    if not res then
+        core.log.error("access audit: send failed: ", err2)
+    elseif res.status >= 400 then
+        core.log.error("access audit: clickhouse rejected: ", res:read_body())
+    end
+
+    httpc:close()
+end
+
+local function audit_access(resource, resource_id, method, status)
+    local entry = {
+        username = get_current_username(),
+        resource = resource or "",
+        resource_id = resource_id or "",
+        method = method or "",
+        status = status or 0,
+        ip = core.request.get_remote_client_ip(ngx.var.r),
+        user_agent = ngx.var.http_user_agent or "",
+        ts = os.date("!%Y-%m-%d %H:%M:%S", ngx.time()),
+    }
+    local ok, err = ngx.timer.at(0, function()
+        send_access_log(entry)
+    end)
+    if not ok then
+        core.log.error("access audit: failed to create timer: ", err)
+    end
+end
+-- =============== Used for logging ===============
+
+
 
 
 local _M = {
@@ -193,6 +270,7 @@ function _M:get(id, conf, sub_path)
     end
 
     utils.fix_count(res.body, id)
+    audit_access(self.name, id, "GET", res.status)
     return res.status, res.body
 end
 
@@ -235,6 +313,7 @@ function _M:post(id, conf, sub_path, args)
     core.log.warn("=== ETCD PUSH SUCCESS ===")
     core.log.warn("resource: ", self.name, ", key: ", key)
 
+    audit_access(self.name, id, "POST", res.status)
     return res.status, res.body
 end
 
@@ -296,6 +375,7 @@ function _M:put(id, conf, sub_path, args)
     core.log.warn("resource: ", self.name, ", key: ", key)
     core.log.warn("conf: ", core.json.encode(conf))
 
+    audit_access(self.name, id, "PUT", res.status)
     return res.status, res.body
 end
 
@@ -336,6 +416,7 @@ function _M:delete(id, conf, sub_path, uri_args)
         return 503, {error_msg = err}
     end
 
+    audit_access(self.name, id, "DELETE", res.status)
     return res.status, res.body
 end
 
@@ -408,21 +489,6 @@ function _M:patch(id, conf, sub_path, args)
         end
         utils.inject_timestamp(node_value, nil, true)
     else
-        if self.name == "admins" then
-            local body_str = core.request.get_body()
-            local body, _ = core.json.decode(body_str)
-            if body and body.old_password then
-                local encoded_old = ngx.encode_base64(body.old_password)
-                if node_value.password ~= encoded_old then
-                    return 401, {error_msg = "wrong password"}
-                end
-            end
-            -- strip old_password before merge in check_conf
-            conf.old_password = nil
-            if conf.password then
-                conf.password = ngx.encode_base64(conf.password)
-            end
-        end
         if self.name == "ssls" then
             if conf.key then
                 conf.key = apisix_ssl.aes_encrypt_pkey(conf.key)
@@ -456,6 +522,7 @@ function _M:patch(id, conf, sub_path, args)
         return 503, {error_msg = err}
     end
 
+    audit_access(self.name, id, "PATCH", res.status)
     return res.status, res.body
 end
 

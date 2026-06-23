@@ -144,6 +144,12 @@ apisix:
 nginx_config:                     # Config for render the template to generate nginx.conf
   envs: 
     - JWT_SECRET
+    - CH_HOST
+    - CH_PORT
+    - CH_USER
+    - CH_PASSWORD
+    - CH_DATABASE
+    - CH_TABLE
   # user: root                    # Set the execution user of the worker process. This is only
                                   # effective if the master process runs with super-user privileges.
   error_log: logs/error.log       # Location of the error log.

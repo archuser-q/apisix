@@ -191,7 +191,17 @@ init: runtime
 .PHONY: run
 run: runtime
 	@$(call func_echo_status, "$@ -> [ Start ]")
-	source $(CURDIR)/.env && sudo JWT_SECRET=$$JWT_SECRET $(ENV_APISIX) start
+	source $(CURDIR)/.env && sudo \
+		JWT_SECRET=$$JWT_SECRET \
+		CH_HOST=$$CH_HOST \
+		CH_PORT=$$CH_PORT \
+		CH_USER=$$CH_USER \
+		CH_PASSWORD=$$CH_PASSWORD \
+		CH_DATABASE=$$CH_DATABASE \
+		CH_TABLE=$$CH_TABLE \
+		CH_ACCESS_TABLE=$$CH_ACCESS_TABLE \
+		SALT=$$SALT \
+		$(ENV_APISIX) start
 	@$(call func_echo_success_status, "$@ -> [ Done ]")
 
 
